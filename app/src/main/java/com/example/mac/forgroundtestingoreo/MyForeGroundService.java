@@ -4,8 +4,17 @@ import android.app.Notification;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.location.Address;
+import android.location.Geocoder;
+import android.location.LocationManager;
+import android.nfc.Tag;
+import android.os.AsyncTask;
+import android.os.Bundle;
+import android.os.Handler;
 import android.os.IBinder;
 import android.util.Log;
 import android.widget.Toast;
@@ -16,8 +25,42 @@ import android.graphics.Color;
 import android.content.Context;
 import android.os.Build;
 
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Timer;
+import java.util.TimerTask;
+import android.content.ContentValues.*;
+import org.apache.http.client.ClientProtocolException;
+import org.apache.http.HttpEntity;
+import org.apache.http.HttpResponse;
+import org.apache.http.NameValuePair;
+import org.apache.http.client.HttpClient;
+import org.apache.http.client.entity.UrlEncodedFormEntity;
+import java.io.UnsupportedEncodingException;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.impl.client.DefaultHttpClient;
+import org.apache.http.message.BasicNameValuePair;
+
+import android.location.Location;
+import android.support.v4.content.ContextCompat;
+import android.support.v4.app.ActivityCompat;
+import android.Manifest;
+
+
+
 
 public class MyForeGroundService extends Service {
+
+
+    private static final int MY_PERMISSION_ACCESS_COARSE_LOCATION = 11;
+
+    public static final int notify = 1000;  //interval between two services(Here Service run every 5 Minute)
+
+    private Handler mHandler = new Handler();   //run on another Thread to avoid crash
+
+    private Timer mTimer = null;
 
     private static final String TAG_FOREGROUND_SERVICE = "FOREGROUND_SERVICE";
 
@@ -29,8 +72,53 @@ public class MyForeGroundService extends Service {
 
     public static final String ACTION_PLAY = "ACTION_PLAY";
 
+    Location mLastLocation;
+
+    private LocationManager mLocationManager = null;
+
+    private static final int LOCATION_INTERVAL = 1000;
+
+    private static final float LOCATION_DISTANCE = 10f;
+
     public MyForeGroundService() {
     }
+
+    private class LocationListener implements android.location.LocationListener {
+
+        public LocationListener(String provider) {
+            //Log.e(io.opencensus.tags.Tag, "LocationListener " + provider);
+            mLastLocation = new Location(provider);
+        }
+
+        @Override
+        public void onLocationChanged(Location location) {
+            //Log.e(TAG, "onLocationChanged: " + location);
+            mLastLocation.set(location);
+            //sendCoordinates(location.toString());
+
+
+        }
+
+        @Override
+        public void onProviderDisabled(String provider) {
+           // Log.e(TAG, "onProviderDisabled: " + provider);
+            //new AsyncCaller("onProviderDisabled: ").execute();
+        }
+
+        @Override
+        public void onProviderEnabled(String provider) {
+           // Log.e(TAG, "onProviderEnabled: " + provider);
+            // new AsyncCaller("onProviderEnabled: ").execute();
+        }
+
+        @Override
+        public void onStatusChanged(String provider, int status, Bundle extras) {
+           // Log.e(TAG, "onStatusChanged: " + provider);
+            //new AsyncCaller("onStatusChanged: "+provider).execute();
+            //sendCoordinates("onStatusChanged: "+ provider);
+        }
+    }
+
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -46,6 +134,7 @@ public class MyForeGroundService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        System.out.println("In onStartCommand");
         if (intent != null) {
             String action = intent.getAction();
 
@@ -67,6 +156,13 @@ public class MyForeGroundService extends Service {
             }
         }
         return super.onStartCommand(intent, flags, startId);
+    }
+
+    private void initializeLocationManager() {
+        //Log.e(TAG, "initializeLocationManager");
+        if (mLocationManager == null) {
+            mLocationManager = (LocationManager) getApplicationContext().getSystemService(Context.LOCATION_SERVICE);
+        }
     }
 
     /* Used to build and start foreground service. */
@@ -112,7 +208,7 @@ public class MyForeGroundService extends Service {
 
         // Build the notification.
         Notification notification = builder.build();
-
+        System.out.println("before start foreground");
         // Start foreground service.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             startMyOwnForeground();
@@ -121,7 +217,191 @@ public class MyForeGroundService extends Service {
 
 
 
+        System.out.println("timer called");
+        if (mTimer != null) // Cancel if already existed
+            mTimer.cancel();
+        else
+            mTimer = new Timer();   //recreate new
+        mTimer.scheduleAtFixedRate(new TimeDisplay(), 0, notify);
+
+
+
     }
+
+    class TimeDisplay extends TimerTask {
+        @Override
+        public void run() {
+            // run on another thread
+            mHandler.post(new Runnable() {
+                @Override
+                public void run() {
+
+
+                    initializeLocationManager();
+
+                    try {
+                        mLocationManager.requestLocationUpdates(
+                                LocationManager.PASSIVE_PROVIDER,
+                                LOCATION_INTERVAL,
+                                LOCATION_DISTANCE,
+                                mLocationListeners[0]
+                        );
+                    } catch (java.lang.SecurityException ex) {
+                       // Log.i(TAG, "fail to request location update, ignore", ex);
+                    } catch (IllegalArgumentException ex) {
+                       // Log.d(TAG, "network provider does not exist, " + ex.getMessage());
+                    }
+
+       /*
+       try {
+            mLocationManager.requestLocationUpdates(
+                    LocationManager.NETWORK_PROVIDER, LOCATION_INTERVAL, LOCATION_DISTANCE,
+                    mLocationListeners[1]);
+        } catch (java.lang.SecurityException ex) {
+            Log.i(TAG, "fail to request location update, ignore", ex);
+        } catch (IllegalArgumentException ex) {
+            Log.d(TAG, "network provider does not exist, " + ex.getMessage());
+        }
+        */
+
+                        try {
+                            mLocationManager.requestLocationUpdates(
+                                    LocationManager.PASSIVE_PROVIDER, LOCATION_INTERVAL, LOCATION_DISTANCE,
+                                    mLocationListeners[0]);
+                            Double latitude;
+                            Double longitude;
+                            if (mLocationManager != null) {
+                                mLastLocation = mLocationManager
+                                        .getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
+                                if (mLastLocation != null) {
+                                    latitude = mLastLocation.getLatitude();
+                                    longitude = mLastLocation.getLongitude();
+                                    Geocoder geocoder = new Geocoder(getApplicationContext(),Locale.getDefault());
+
+                                    List<Address> addresses;
+
+
+                                    addresses = geocoder.getFromLocation(latitude, longitude, 1); // Here 1 represent max location result to returned, by documents it recommended 1 to 5
+
+                                    String address = addresses.get(0).getAddressLine(0); // If any additional address line present than only, check with max available address lines by getMaxAddressLineIndex()
+                                    String city = addresses.get(0).getLocality();
+                                    String state = addresses.get(0).getAdminArea();
+                                    String country = addresses.get(0).getCountryName();
+                                    String postalCode = addresses.get(0).getPostalCode();
+                                    String knownName = addresses.get(0).getFeatureName();
+
+                                    if(addresses!=null){
+                                        new AsyncCaller(latitude.toString(), longitude.toString(), address).execute();
+                                    }
+                                }
+                            }
+
+                            // Only if available else return NULL
+                        } catch (java.lang.SecurityException ex) {
+                            //Log.i(TAG, "fail to request location update, ignore", ex);
+                        } catch (IllegalArgumentException ex) {
+                            //Log.d(TAG, "gps provider does not exist " + ex.getMessage());
+                        } catch (IOException e){
+
+                        }
+
+
+                       // new AsyncCaller("", "", "").execute();
+
+                }
+            });
+        }
+    }
+
+    private class AsyncCaller extends AsyncTask<Void, Void, Void>
+    {
+        String latitude, longitude, address;
+
+        public AsyncCaller(String lati, String longi, String address) {
+            super();
+            latitude = lati;
+            longitude = longi;
+            this.address = address;
+
+            // do stuff
+        }
+
+        @Override
+        protected void onPreExecute() {
+            super.onPreExecute();
+
+            //this method will be running on UI thread
+
+        }
+        @Override
+        protected Void doInBackground(Void... params) {
+
+            //this method will be running on a background thread so don't update UI from here
+            //do your long-running http tasks here, you don't want to pass argument and u can access the parent class' variable url over here
+           try {
+
+               System.out.println("Latitude "+latitude);
+
+               System.out.println("Longitude "+longitude);
+
+               System.out.println("Address "+address);
+
+              sendCoordinates(latitude,longitude,address);
+
+
+           }catch (Exception e){
+
+           }
+            System.out.println("this is background");
+            return null;
+        }
+
+        @Override
+        protected void onPostExecute(Void result) {
+            super.onPostExecute(result);
+            //onDestroy();
+            //this method will be running on UI thread
+        }
+
+    }
+
+
+    public void sendCoordinates(String lati, String longi, String add){
+        try {
+            /*empid = prefs.getString("empid", "");*/
+            Context ctx = getApplicationContext();
+            //SharedPreferences prefs = getSharedPreferences(MY_PREFS_NAME, MODE_PRIVATE);
+            //empid = prefs.getString("empid", "");
+            String empid="";
+            System.out.println("This is web api called");
+            HttpClient httpclient = new DefaultHttpClient();
+            HttpPost post = new HttpPost("http://192.168.0.200/ubiattendance/index.php/Att_services/backgroundLocationService");
+            //HttpPost post = new HttpPost("https://sandbox.ubiattendance.com/index.php/Att_services/backgroundLocationService");
+            List<NameValuePair> list=new ArrayList<NameValuePair>();
+            list.add(new BasicNameValuePair("latitude", lati));
+            list.add(new BasicNameValuePair("longitude", longi));
+            list.add(new BasicNameValuePair("address", add));
+            list.add(new BasicNameValuePair("empid", empid));
+
+            post.setEntity(new UrlEncodedFormEntity(list));
+
+            HttpResponse response = httpclient.execute(post);
+            // HttpResponse httpResponse=  httpclient.execute(post);
+
+            HttpEntity entity = response.getEntity();
+            System.out.println("this is response "+entity.toString());
+            // String s= readResponse(response);
+            //System.out.println("this is string response "+s);
+        }catch ( IOException ioe ){
+            ioe.printStackTrace();
+        }
+    }
+
+    LocationListener[] mLocationListeners = new LocationListener[]{
+            /* new LocationListener(LocationManager.GPS_PROVIDER),
+             new LocationListener(LocationManager.NETWORK_PROVIDER),*/
+            new LocationListener(LocationManager.PASSIVE_PROVIDER)
+    };
 
     private void startMyOwnForeground(){
         String NOTIFICATION_CHANNEL_ID = "com.example.mac.forgroundtestingoreo";
@@ -146,10 +426,23 @@ public class MyForeGroundService extends Service {
     private void stopForegroundService() {
         Log.d(TAG_FOREGROUND_SERVICE, "Stop foreground service.");
 
+
+        if (mLocationManager != null) {
+            for (int i = 0; i < mLocationListeners.length; i++) {
+                try {
+                    mLocationManager.removeUpdates(mLocationListeners[i]);
+                } catch (Exception ex) {
+                   // Log.i(TAG, "fail to remove location listners, ignore", ex);
+                }
+            }
+        }
+
         // Stop foreground service and remove the notification.
         stopForeground(true);
 
         // Stop the foreground service.
         stopSelf();
+
+
     }
 }
